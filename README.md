@@ -3,6 +3,7 @@ FloodSense — Neural Nova Data Drop
 Official dataset package for the *FloodSense* challenge, part of Neural Nova's 48-Hour Data Drop Sprint by BTech.
 
 ⚠️ Read This First
+
 Open `data_dictionary.txt` before touching any data. It explains every column, known data issues, and how the datasets connect to each other. Skipping it will cost you time.
 
 📁 Files
@@ -23,6 +24,7 @@ Open `data_dictionary.txt` before touching any data. It explains every column, k
 
 
 ⚠️ Data Advisory
+
 The dataset reflects real-world collection conditions. Teams are expected to inspect their data thoroughly before training.
 
 - Some columns contain missing entries — your imputation choices should be documented and justifiable.
