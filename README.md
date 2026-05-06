@@ -1,6 +1,6 @@
-FloodSense — Neural Nova Data Drop
+**FloodSense — Neural Nova Data Drop**
 
-Official dataset package for the *FloodSense* challenge, part of Neural Nova's 48-Hour Data Drop Sprint by BTech.
+Official dataset package for the *FloodSense* challenge, part of Neural Nova's 60-Hour Data Drop Sprint by BTech.
 
 ⚠️ Read This First
 
@@ -11,9 +11,13 @@ Open `data_dictionary.txt` before touching any data. It explains every column, k
 | File | Description |
 
 | `floodsense_training_data.csv` | 1,434 daily flood sensor records across Pakistani districts (2022–2024). This is your primary training dataset. |
+
 | `ndma_flood_impact_2022.csv` | NDMA regional impact data from the 2022 floods. Use for impact quantification in your pitch — not for ML training. |
+
 | `district_elevation_reference.csv` | District-level average elevations from NASA SRTM. Merge on `district` column to use terrain as a feature. |
+
 | `data_dictionary.txt` | Full column descriptions, known data issues, and usage guidance. Read before training. |
+
 | `hackathon_notes.txt` | Challenge brief, deliverables, and judging context. |
 
 🎯 The Challenge
