@@ -92,6 +92,36 @@ def _inject_styles() -> None:
                 color: #c8e8f9;
                 background: rgba(9, 24, 36, 0.62);
             }
+            .alert-mode {
+                border: 1px solid rgba(255, 125, 125, 0.75);
+                border-radius: 14px;
+                padding: 12px 14px;
+                background: linear-gradient(120deg, rgba(120, 20, 20, 0.72), rgba(73, 16, 16, 0.78));
+                margin-bottom: 12px;
+                box-shadow: 0 0 24px rgba(255, 94, 94, 0.3);
+            }
+            .alert-mode-title {
+                font-family: "Space Grotesk", sans-serif;
+                font-size: 20px;
+                font-weight: 700;
+                margin: 0 0 6px 0;
+                color: #ffe0e0;
+            }
+            .alert-line {
+                margin: 3px 0;
+                color: #ffecec;
+                font-size: 13px;
+                line-height: 1.35;
+            }
+            .safe-mode {
+                border: 1px solid rgba(101, 231, 184, 0.55);
+                border-radius: 14px;
+                padding: 10px 12px;
+                background: linear-gradient(120deg, rgba(18, 80, 64, 0.62), rgba(8, 58, 45, 0.72));
+                margin-bottom: 12px;
+                color: #d9fff3;
+                font-size: 13px;
+            }
             div.stButton > button {
                 border: 1px solid rgba(120, 225, 255, 0.6);
                 color: #022036;
@@ -164,6 +194,58 @@ def _predict(payload: dict) -> dict:
         return local
 
 
+def _compute_provincial_alerts(
+    districts: list[str],
+    rainfall_mm: float,
+    selected_date: date,
+    soil_condition: str,
+    visible_water: str,
+) -> list[dict]:
+    alerts: list[dict] = []
+    for district in districts:
+        payload = {
+            "rainfall_mm": float(rainfall_mm),
+            "selected_date": selected_date.isoformat(),
+            "district": district,
+            "soil_condition": soil_condition,
+            "visible_water": visible_water,
+        }
+        result = _predict(payload)
+        if not result.get("ok", False):
+            continue
+        if result.get("risk_level_en") in {"High", "Critical"}:
+            alerts.append(
+                {
+                    "district": district,
+                    "risk_level_en": result["risk_level_en"],
+                    "risk_level_ur": result["risk_level_ur"],
+                    "recommended_action_en": result["recommended_action_en"],
+                }
+            )
+    return alerts
+
+
+def _render_alert_mode(alerts: list[dict]) -> None:
+    if alerts:
+        lines = [
+            '<div class="alert-mode">',
+            '<p class="alert-mode-title">ALERT MODE ACTIVE: High/Critical Districts Detected</p>',
+        ]
+        for row in alerts:
+            lines.append(
+                f'<div class="alert-line"><b>{row["district"]}</b> '
+                f'({row["risk_level_en"]}/{row["risk_level_ur"]}) — '
+                f'{row["recommended_action_en"]}</div>'
+            )
+        lines.append("</div>")
+        st.markdown("\n".join(lines), unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="safe-mode"><b>Normal Watch:</b> No district is currently in High or Critical risk for these input conditions.</div>',
+            unsafe_allow_html=True,
+        )
+
+
 def _render_header() -> None:
     st.markdown(
         """
@@ -196,20 +278,34 @@ def main() -> None:
         )
         st.caption(f"Backend URL: {BACKEND_URL}")
 
-    col_left, col_right = st.columns([1.1, 1.0], gap="large")
     districts = _district_options()
     if not districts:
         st.error("No districts available in artifacts.")
         return
 
+    current_rainfall = float(st.session_state.get("rainfall_input", 40.0))
+    current_date = st.session_state.get("date_input", date.today())
+    current_soil = st.session_state.get("soil_input", "Moist")
+    current_visible_water = st.session_state.get("water_input", "No")
+    alerts = _compute_provincial_alerts(
+        districts=districts,
+        rainfall_mm=current_rainfall,
+        selected_date=current_date,
+        soil_condition=current_soil,
+        visible_water=current_visible_water,
+    )
+    _render_alert_mode(alerts)
+
+    col_left, col_right = st.columns([1.1, 1.0], gap="large")
+
     with col_left:
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
         st.subheader("Field Inputs")
-        rainfall_mm = st.slider("Rainfall (mm)", min_value=0.0, max_value=500.0, value=40.0, step=1.0)
-        selected_date = st.date_input("Date", value=date.today())
+        rainfall_mm = st.slider("Rainfall (mm)", min_value=0.0, max_value=500.0, value=40.0, step=1.0, key="rainfall_input")
+        selected_date = st.date_input("Date", value=date.today(), key="date_input")
         district = st.selectbox("District", options=districts)
-        soil_condition = st.select_slider("Soil condition", options=["Dry", "Moist", "Saturated"], value="Moist")
-        visible_water = st.radio("Visible surface water", options=["Yes", "No"], horizontal=True)
+        soil_condition = st.select_slider("Soil condition", options=["Dry", "Moist", "Saturated"], value="Moist", key="soil_input")
+        visible_water = st.radio("Visible surface water", options=["Yes", "No"], horizontal=True, key="water_input")
         go = st.button("Run Flood Check", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
