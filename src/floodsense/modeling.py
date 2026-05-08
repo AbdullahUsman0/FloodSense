@@ -8,7 +8,13 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_recall_fscore_support
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    precision_recall_fscore_support,
+    roc_auc_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
@@ -21,11 +27,20 @@ class EvaluationResult:
     precision: float
     recall: float
     f1: float
+    roc_auc: float
     confusion_matrix: list[list[int]]
     report: dict[str, Any]
 
 
-def build_preprocessor() -> ColumnTransformer:
+def build_preprocessor(
+    numeric_features: list[str] | None = None,
+    categorical_features: list[str] | None = None,
+) -> ColumnTransformer:
+    if numeric_features is None:
+        numeric_features = MODEL_NUMERIC_FEATURES
+    if categorical_features is None:
+        categorical_features = MODEL_CATEGORICAL_FEATURES
+
     numeric_pipeline = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
@@ -39,14 +54,21 @@ def build_preprocessor() -> ColumnTransformer:
     )
     return ColumnTransformer(
         transformers=[
-            ("num", numeric_pipeline, MODEL_NUMERIC_FEATURES),
-            ("cat", categorical_pipeline, MODEL_CATEGORICAL_FEATURES),
+            ("num", numeric_pipeline, numeric_features),
+            ("cat", categorical_pipeline, categorical_features),
         ]
     )
 
 
-def build_candidate_pipelines(random_state: int = 42) -> dict[str, Pipeline]:
-    preprocessor = build_preprocessor()
+def build_candidate_pipelines(
+    random_state: int = 42,
+    numeric_features: list[str] | None = None,
+    categorical_features: list[str] | None = None,
+) -> dict[str, Pipeline]:
+    preprocessor = build_preprocessor(
+        numeric_features=numeric_features,
+        categorical_features=categorical_features,
+    )
     models = {
         "random_forest": RandomForestClassifier(
             n_estimators=500,
@@ -71,8 +93,10 @@ def build_candidate_pipelines(random_state: int = 42) -> dict[str, Pipeline]:
 
 def evaluate_binary_classifier(model: Pipeline, X_test: pd.DataFrame, y_test: pd.Series) -> EvaluationResult:
     y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
     acc = accuracy_score(y_test, y_pred)
     precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred, average="binary", zero_division=0)
+    roc_auc = roc_auc_score(y_test, y_proba) if len(np.unique(y_test)) > 1 else 0.0
     cm = confusion_matrix(y_test, y_pred).tolist()
     report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
     return EvaluationResult(
@@ -80,6 +104,7 @@ def evaluate_binary_classifier(model: Pipeline, X_test: pd.DataFrame, y_test: pd
         precision=float(precision),
         recall=float(recall),
         f1=float(f1),
+        roc_auc=float(roc_auc),
         confusion_matrix=cm,
         report=report,
     )
@@ -89,9 +114,14 @@ def choose_best_model(scorecard: dict[str, dict[str, EvaluationResult]]) -> str:
     best_name = ""
     best_score = -np.inf
     for model_name, splits in scorecard.items():
-        strat = splits["stratified"]
-        time_based = splits["time_based"]
-        score = (0.4 * strat.accuracy) + (0.6 * time_based.accuracy) + (0.2 * time_based.f1)
+        year_holdout = splits["year_holdout"]
+        timeseries_cv = splits["timeseries_cv"]
+        score = (
+            (0.60 * year_holdout.recall)
+            + (0.30 * year_holdout.roc_auc)
+            + (0.20 * timeseries_cv.recall)
+            + (0.10 * timeseries_cv.roc_auc)
+        )
         if score > best_score:
             best_score = score
             best_name = model_name

@@ -181,7 +181,9 @@ def build_input_row(
     row["rain_soil_interaction"] = float(row["precipitation"] * row["soil_moisture"])
     prior_cumulative = float(base.get("monsoon_cumulative_precip", 0.0))
     row["monsoon_cumulative_precip"] = float(prior_cumulative + row["precipitation"] if row["is_monsoon"] == 1 else 0.0)
-    row["water_area_acceleration"] = float(row["water_area_change"] - float(base.get("water_area_change", 0.0)))
+    row["water_area_km2_lag1"] = float(base.get("water_area_km2", row["water_area_km2"]))
+    row["water_area_change_lag1"] = float(base.get("water_area_change", row["water_area_change"]))
+    row["water_area_pct_change_lag1"] = float(base.get("water_area_pct_change", row["water_area_pct_change"]))
 
     return pd.DataFrame([row])
 

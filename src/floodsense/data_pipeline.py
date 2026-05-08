@@ -116,7 +116,11 @@ def clean_training_data(df: pd.DataFrame) -> tuple[pd.DataFrame, DataQualityStat
     working["rain_soil_interaction"] = working["precipitation"].fillna(0.0) * working["soil_moisture"].fillna(0.0)
     working["monsoon_precip_raw"] = np.where(working["is_monsoon"] == 1, working["precipitation"].fillna(0.0), 0.0)
     working["monsoon_cumulative_precip"] = working.groupby(["district", "year"], sort=False)["monsoon_precip_raw"].cumsum()
-    working["water_area_acceleration"] = working.groupby("district", sort=False)["water_area_change"].diff().fillna(0.0)
+    working["water_area_km2_lag1"] = working.groupby("district", sort=False)["water_area_km2"].shift(1)
+    working["water_area_change_lag1"] = working.groupby("district", sort=False)["water_area_change"].shift(1)
+    working["water_area_pct_change_lag1"] = working.groupby("district", sort=False)["water_area_pct_change"].shift(1)
+    for lag_col in ["water_area_km2_lag1", "water_area_change_lag1", "water_area_pct_change_lag1"]:
+        working[lag_col] = working[lag_col].fillna(working[lag_col].median())
     working = working.drop(columns=["monsoon_precip_raw"], errors="ignore")
     working = working.sort_values("date").reset_index(drop=True)
 
@@ -137,9 +141,11 @@ def attach_elevation_features(train_df: pd.DataFrame, elevation_df: pd.DataFrame
     return merged
 
 
-def get_feature_target_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def get_feature_target_frame(df: pd.DataFrame, drop_feature_columns: list[str] | None = None) -> tuple[pd.DataFrame, pd.Series]:
     y = df["flood_event"].astype(int)
     X = df.drop(columns=[c for c in DROP_COLUMNS if c in df.columns]).copy()
+    if drop_feature_columns:
+        X = X.drop(columns=[c for c in drop_feature_columns if c in X.columns], errors="ignore")
     return X, y
 
 

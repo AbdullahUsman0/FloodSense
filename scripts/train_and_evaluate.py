@@ -10,14 +10,21 @@ import sys
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import TimeSeriesSplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from floodsense.config import MODEL_NUMERIC_FEATURES, RISK_ACTIONS, RISK_LABELS_UR, RiskResult
+from floodsense.config import (
+    LEAKAGE_PRONE_FEATURES,
+    MODEL_CATEGORICAL_FEATURES,
+    MODEL_NUMERIC_FEATURES,
+    RISK_ACTIONS,
+    RISK_LABELS_UR,
+    RiskResult,
+)
 from floodsense.data_pipeline import (
     assert_no_non_finite_inputs,
     attach_elevation_features,
@@ -33,19 +40,41 @@ from floodsense.inference import (
     format_result_payload,
     predict_risk,
 )
-from floodsense.modeling import choose_best_model, build_candidate_pipelines, evaluate_binary_classifier, extract_feature_importance
-from floodsense.scenario import apply_scenario_card1_monsoon_surge
-from floodsense.scenario import apply_scenario_card2_sensor_rogue
+from floodsense.modeling import (
+    EvaluationResult,
+    build_candidate_pipelines,
+    choose_best_model,
+    evaluate_binary_classifier,
+    extract_feature_importance,
+)
+from floodsense.scenario import apply_scenario_card1_monsoon_surge, apply_scenario_card2_sensor_rogue
 
 
-def _metrics_to_dict(result) -> dict:
+def _metrics_to_dict(result: EvaluationResult) -> dict:
     return {
         "accuracy": result.accuracy,
         "precision": result.precision,
         "recall": result.recall,
         "f1": result.f1,
+        "roc_auc": result.roc_auc,
         "confusion_matrix": result.confusion_matrix,
     }
+
+
+def _aggregate_eval_results(results: list[EvaluationResult]) -> EvaluationResult:
+    if not results:
+        raise ValueError("No evaluation results to aggregate.")
+    avg = lambda key: float(np.mean([getattr(r, key) for r in results]))
+    cm_array = np.mean([np.array(r.confusion_matrix, dtype=float) for r in results], axis=0)
+    return EvaluationResult(
+        accuracy=avg("accuracy"),
+        precision=avg("precision"),
+        recall=avg("recall"),
+        f1=avg("f1"),
+        roc_auc=avg("roc_auc"),
+        confusion_matrix=np.rint(cm_array).astype(int).tolist(),
+        report={"note": "Averaged from TimeSeriesSplit folds"},
+    )
 
 
 def _write_markdown_report(
@@ -57,6 +86,7 @@ def _write_markdown_report(
     scenario_details: dict | None,
     scenario2_details: dict | None,
     district_audit: list[dict],
+    leakage_check: dict,
 ) -> None:
     lines: list[str] = []
     lines.append("# FloodSense Training Report")
@@ -72,6 +102,16 @@ def _write_markdown_report(
     lines.append("")
     lines.append("## Model Selection")
     lines.append(f"- Selected model: **{selected_model_name}**")
+    lines.append("- Selection objective: maximize flood recall and ROC-AUC on future-style validation.")
+    lines.append("")
+    lines.append("## Leakage Guardrails")
+    lines.append("- Random split used for final selection: **No**")
+    lines.append(f"- Latest-year holdout: **{leakage_check['year_holdout_label']}**")
+    lines.append(f"- TimeSeries CV folds: **{leakage_check['timeseries_cv_folds']}**")
+    lines.append(
+        f"- Leakage-prone features excluded: **{', '.join(leakage_check['excluded_features']) if leakage_check['excluded_features'] else 'None'}**"
+    )
+    lines.append(f"- Duplicate rows removed before split: **{leakage_check['duplicates_removed']}**")
     lines.append("")
     lines.append("## Scenario Card 1")
     if scenario_details:
@@ -87,7 +127,6 @@ def _write_markdown_report(
     else:
         lines.append("- Not applied.")
     lines.append("")
-
     lines.append("## Scenario Card 2")
     if scenario2_details:
         lines.append(f"- Applied: **{scenario2_details.get('applied', False)}**")
@@ -101,7 +140,6 @@ def _write_markdown_report(
     else:
         lines.append("- Not applied.")
     lines.append("")
-
     lines.append("## District Extreme-Value Validation")
     lines.append("- Required check: every district returns a non-null risk class under extreme rainfall input.")
     for row in district_audit:
@@ -110,22 +148,22 @@ def _write_markdown_report(
             f"(confidence={row['confidence_pct']}%, rainfall={row['rainfall_mm']} mm)"
         )
     lines.append("")
-
     lines.append("## Evaluation Metrics")
     for name, splits in scorecard.items():
         lines.append(f"### {name}")
         for split_name, metrics in splits.items():
-            lines.append(f"- {split_name}: accuracy={metrics.accuracy:.4f}, precision={metrics.precision:.4f}, recall={metrics.recall:.4f}, f1={metrics.f1:.4f}")
+            lines.append(
+                f"- {split_name}: accuracy={metrics.accuracy:.4f}, precision={metrics.precision:.4f}, "
+                f"recall={metrics.recall:.4f}, f1={metrics.f1:.4f}, roc_auc={metrics.roc_auc:.4f}"
+            )
             lines.append(f"  confusion_matrix={metrics.confusion_matrix}")
         lines.append("")
-
     lines.append("## Top Feature Importance")
     if top_features.empty:
         lines.append("- Not available for this model.")
     else:
         for _, row in top_features.head(15).iterrows():
             lines.append(f"- {row['feature']}: {row['importance']:.5f}")
-
     (artifacts_dir / "training_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -138,6 +176,8 @@ def main() -> None:
     parser.add_argument("--scenario-spike-increase-pct", type=float, default=300.0)
     parser.add_argument("--apply-scenario-card2", action="store_true", help="Impute one faulty district rainfall from two nearest districts.")
     parser.add_argument("--faulty-district", type=str, default="Sindh_District")
+    parser.add_argument("--allow-leakage-prone-features", action="store_true", help="Include leakage-prone features (not recommended).")
+    parser.add_argument("--timeseries-cv-folds", type=int, default=4)
     args = parser.parse_args()
 
     args.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -170,35 +210,59 @@ def main() -> None:
         }
         train_df = augmented_df
         augmented_df.to_csv(args.artifacts_dir / "scenario_card1_augmented_training_data.csv", index=False)
+
     cleaned_df, quality_stats = clean_training_data(train_df)
     model_df = attach_elevation_features(cleaned_df, elevation_df)
 
-    X, y = get_feature_target_frame(model_df)
-    assert_no_non_finite_inputs(X, MODEL_NUMERIC_FEATURES)
+    excluded_features = [] if args.allow_leakage_prone_features else [f for f in LEAKAGE_PRONE_FEATURES if f in model_df.columns]
+    X, y = get_feature_target_frame(model_df, drop_feature_columns=excluded_features)
+    active_numeric_features = [f for f in MODEL_NUMERIC_FEATURES if f in X.columns]
+    active_categorical_features = [f for f in MODEL_CATEGORICAL_FEATURES if f in X.columns]
+    assert_no_non_finite_inputs(X, active_numeric_features)
 
-    X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(
-        X,
-        y,
-        test_size=0.2,
+    years = sorted(cleaned_df["year"].dropna().unique().tolist())
+    if len(years) >= 2:
+        holdout_year = 2024 if 2024 in years else int(years[-1])
+        eval_mask = cleaned_df["year"] <= holdout_year
+        eval_df = cleaned_df.loc[eval_mask].copy()
+        train_indices = eval_df.index[eval_df["year"] < holdout_year]
+        test_indices = eval_df.index[eval_df["year"] == holdout_year]
+        X_train_y = X.loc[train_indices].copy()
+        y_train_y = y.loc[train_indices].copy()
+        X_test_y = X.loc[test_indices].copy()
+        y_test_y = y.loc[test_indices].copy()
+        year_holdout_label = f"train<{holdout_year}, test={holdout_year}"
+    else:
+        X_train_y, X_test_y, y_train_y, y_test_y = time_based_split(X, y, cleaned_df["date"], test_fraction=0.2)
+        year_holdout_label = "fallback chronological 80/20"
+
+    candidates = build_candidate_pipelines(
         random_state=42,
-        stratify=y,
+        numeric_features=active_numeric_features,
+        categorical_features=active_categorical_features,
     )
-    X_train_t, X_test_t, y_train_t, y_test_t = time_based_split(X, y, cleaned_df["date"], test_fraction=0.2)
-
-    candidates = build_candidate_pipelines(random_state=42)
-    scorecard = {}
+    scorecard: dict[str, dict[str, EvaluationResult]] = {}
+    folds_used = 2
 
     for model_name, pipeline in candidates.items():
-        pipeline_s = copy.deepcopy(pipeline)
-        pipeline_s.fit(X_train_s, y_train_s)
-        eval_s = evaluate_binary_classifier(pipeline_s, X_test_s, y_test_s)
+        pipeline_y = copy.deepcopy(pipeline)
+        pipeline_y.fit(X_train_y, y_train_y)
+        eval_year = evaluate_binary_classifier(pipeline_y, X_test_y, y_test_y)
 
-        pipeline_t = copy.deepcopy(pipeline)
-        pipeline_t.fit(X_train_t, y_train_t)
-        eval_t = evaluate_binary_classifier(pipeline_t, X_test_t, y_test_t)
+        tscv_splits = min(args.timeseries_cv_folds, max(2, len(X_train_y) // 200))
+        folds_used = tscv_splits
+        tscv = TimeSeriesSplit(n_splits=tscv_splits)
+        fold_metrics: list[EvaluationResult] = []
+        X_sorted = X_train_y.reset_index(drop=True)
+        y_sorted = y_train_y.reset_index(drop=True)
+        for tr_idx, va_idx in tscv.split(X_sorted):
+            pipeline_cv = copy.deepcopy(pipeline)
+            pipeline_cv.fit(X_sorted.iloc[tr_idx], y_sorted.iloc[tr_idx])
+            fold_metrics.append(evaluate_binary_classifier(pipeline_cv, X_sorted.iloc[va_idx], y_sorted.iloc[va_idx]))
+        eval_cv = _aggregate_eval_results(fold_metrics)
         scorecard[model_name] = {
-            "stratified": eval_s,
-            "time_based": eval_t,
+            "year_holdout": eval_year,
+            "timeseries_cv": eval_cv,
         }
 
     best_name = choose_best_model(scorecard)
@@ -246,9 +310,13 @@ def main() -> None:
         "allowed_districts": allowed_districts,
         "scenario_card1": scenario_details or {"applied": False},
         "scenario_card2": scenario2_details or {"applied": False},
+        "leakage_guardrails": {
+            "excluded_features": excluded_features,
+            "year_holdout_label": year_holdout_label,
+            "timeseries_cv_folds": folds_used,
+        },
     }
 
-    # Mandatory robustness check: extreme value classification for each district.
     district_audit: list[dict] = []
     default_date = cleaned_df["date"].max()
     if pd.isna(default_date):
@@ -332,16 +400,24 @@ def main() -> None:
         scenario_details=scenario_details,
         scenario2_details=scenario2_details,
         district_audit=district_audit,
+        leakage_check={
+            "year_holdout_label": year_holdout_label,
+            "timeseries_cv_folds": folds_used,
+            "excluded_features": excluded_features,
+            "duplicates_removed": quality_stats.duplicates_removed,
+        },
     )
 
     selected_split_metrics = scorecard[best_name]
-    strat_acc = selected_split_metrics["stratified"].accuracy
-    time_acc = selected_split_metrics["time_based"].accuracy
+    year_acc = selected_split_metrics["year_holdout"].accuracy
+    cv_acc = selected_split_metrics["timeseries_cv"].accuracy
+    year_recall = selected_split_metrics["year_holdout"].recall
     print(f"Selected model: {best_name}")
-    print(f"Stratified accuracy: {strat_acc:.4f}")
-    print(f"Time-based accuracy: {time_acc:.4f}")
-    if strat_acc < 0.70 or time_acc < 0.70:
-        print("WARNING: One split is below 0.70 accuracy. Review feature engineering and thresholds.")
+    print(f"Year-holdout accuracy: {year_acc:.4f}")
+    print(f"TimeSeries-CV accuracy: {cv_acc:.4f}")
+    print(f"Year-holdout flood recall: {year_recall:.4f}")
+    if year_acc < 0.70 or cv_acc < 0.70:
+        print("WARNING: One realistic split is below 0.70 accuracy. Review features and leakage controls.")
 
 
 if __name__ == "__main__":

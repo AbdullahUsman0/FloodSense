@@ -48,7 +48,7 @@ RISK_ACTIONS = {
 FEATURES_USED = [
     "Rainfall: precipitation, precip_3day_avg, precip_7day_avg",
     "Soil: soil_moisture, soil_3day_avg",
-    "Water extent: water_area_km2, water_area_change, water_area_pct_change",
+    "Water history (lagged): water_area_km2_lag1, water_area_change_lag1, water_area_pct_change_lag1",
     "Atmospheric: temperature, humidity, pressure, evaporation",
     "Temporal: month, day_of_year, is_monsoon",
     "Engineered: rain_soil_interaction, monsoon_cumulative_precip, water_area_acceleration",
@@ -96,9 +96,9 @@ MODEL_NUMERIC_FEATURES = [
     "precip_7day_avg",
     "soil_moisture",
     "soil_3day_avg",
-    "water_area_km2",
-    "water_area_change",
-    "water_area_pct_change",
+    "water_area_km2_lag1",
+    "water_area_change_lag1",
+    "water_area_pct_change_lag1",
     "temperature",
     "humidity",
     "pressure",
@@ -108,7 +108,6 @@ MODEL_NUMERIC_FEATURES = [
     "is_monsoon",
     "rain_soil_interaction",
     "monsoon_cumulative_precip",
-    "water_area_acceleration",
     "avg_elevation_m",
 ]
 
@@ -116,6 +115,13 @@ MODEL_NUMERIC_FEATURES = [
 MODEL_CATEGORICAL_FEATURES = [
     "district",
     "terrain_type",
+]
+
+LEAKAGE_PRONE_FEATURES = [
+    "water_area_km2",
+    "water_area_change",
+    "water_area_pct_change",
+    "ds_idx",
 ]
 
 
