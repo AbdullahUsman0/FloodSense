@@ -384,7 +384,7 @@ def main() -> None:
         if item["risk_level_en"] not in {"Low", "Medium", "High", "Critical"}:
             raise ValueError(f"Invalid classification for district {item['district']}: {item['risk_level_en']}")
 
-    joblib.dump(final_pipeline, args.artifacts_dir / "model.joblib")
+    joblib.dump(final_pipeline, args.artifacts_dir / "model.joblib", compress=("zlib", 3))
     with (args.artifacts_dir / "model_meta.json").open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2, ensure_ascii=False)
     with (args.artifacts_dir / "district_extreme_risk_validation.json").open("w", encoding="utf-8") as handle:

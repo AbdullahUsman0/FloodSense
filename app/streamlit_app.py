@@ -144,12 +144,12 @@ def _inject_styles() -> None:
     )
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def _load_local_bundle():
     return load_artifacts(ARTIFACTS_DIR)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner=False)
 def _backend_get(path: str) -> dict:
     response = requests.get(f"{BACKEND_URL}{path}", timeout=5)
     response.raise_for_status()
@@ -276,7 +276,6 @@ def main() -> None:
         st.info(
             "If one rain sensor fails, the system fills that reading using the average rainfall from the two nearest districts."
         )
-        st.caption(f"Backend URL: {BACKEND_URL}")
 
     districts = _district_options()
     if not districts:
