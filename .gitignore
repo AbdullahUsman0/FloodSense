@@ -1,0 +1,10 @@
+.venv/
+.uv-cache/
+.python/
+artifacts/
+__pycache__/
+.pytest_cache/
+*.pyc
+.tmp/
+.tmp2/
+pytest-cache-files-*/
