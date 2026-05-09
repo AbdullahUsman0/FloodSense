@@ -1,9 +1,15 @@
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Allow build to use an alternate PyPI mirror and increase pip timeout for slow networks
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_DEFAULT_TIMEOUT=100
+RUN pip install --no-cache-dir --index-url ${PIP_INDEX_URL} -r requirements.txt
+
 COPY . .
-EXPOSE 8501
+EXPOSE 8502
 ENV FLOODSENSE_BACKEND_URL=http://backend:8000
-CMD ["streamlit", "run", "app/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+CMD ["streamlit", "run", "app/streamlit_app.py", "--server.port", "8502", "--server.address", "0.0.0.0"]
 

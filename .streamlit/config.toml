@@ -1,2 +1,5 @@
 [server]
 enableStaticServing = true
+headless = true
+port = 8502
+enableCORS = false

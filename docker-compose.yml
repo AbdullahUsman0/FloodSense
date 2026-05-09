@@ -19,5 +19,5 @@ services:
     environment:
       - FLOODSENSE_BACKEND_URL=http://backend:8000
     ports:
-      - "8501:8501"
+      - "8502:8502"
 

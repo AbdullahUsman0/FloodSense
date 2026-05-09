@@ -476,7 +476,8 @@ def _compute_provincial_alerts(
 def _render_header() -> None:
     st.markdown(
         """
-        <div class="main-card">
+                <a id="floodsense-top"></a>
+                <div class="main-card">
           <h1 class="header-title">FloodSense</h1>
           <div class="header-title urdu">سیلاب کا خطرہ</div>
           <p class="header-subtitle">Enter today's field conditions to check flood risk for your district.</p>
@@ -709,21 +710,25 @@ def _scroll_page_to_top() -> None:
                 """
                 <script>
                     (function () {
-                        const scrollTop = () => {
+                        const goToTop = () => {
                             try {
-                                const parentDocument = window.parent.document;
-                                parentDocument.documentElement.scrollTop = 0;
-                                parentDocument.body.scrollTop = 0;
-                                window.parent.scrollTo(0, 0);
-                            } catch (error) {
-                                try {
-                                    window.top.scrollTo(0, 0);
-                                } catch (fallbackError) {
-                                    window.scrollTo(0, 0);
+                                // Jump parent to the named anchor we render at the top of the page
+                                if (window.parent && window.parent.location) {
+                                    window.parent.location.hash = '#floodsense-top';
+                                    // Clear the hash without reloading after a short delay
+                                    setTimeout(() => {
+                                        try {
+                                            window.parent.history.replaceState(null, '', window.parent.location.pathname + window.parent.location.search);
+                                        } catch (e) {}
+                                    }, 120);
+                                    return;
                                 }
-                            }
+                            } catch (err) {}
+                            // Fallback to scrolling this frame if parent access is blocked
+                            try { window.scrollTo(0, 0); } catch (e) {}
                         };
-                        requestAnimationFrame(() => requestAnimationFrame(scrollTop));
+                        // Run after a couple animation frames so Page DOM is more likely ready
+                        requestAnimationFrame(() => setTimeout(goToTop, 50));
                     })();
                 </script>
                 """,
