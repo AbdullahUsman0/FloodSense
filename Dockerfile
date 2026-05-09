@@ -18,6 +18,6 @@ COPY . .
 # Do not hardcode the exposed port; runtime platforms (Render) may provide $PORT.
 EXPOSE 8502
 
-# Use shell form so `$PORT` environment variable is expanded at container runtime.
-# If `PORT` isn't provided, Streamlit will fall back to its default.
-CMD streamlit run app.py --server.port ${PORT:-8502} --server.address 0.0.0.0
+# Ensure Streamlit reads the runtime port by setting STREAMLIT_SERVER_PORT
+# from $PORT before starting the server. Use sh -c so expansion happens at runtime.
+CMD ["sh", "-c", "STREAMLIT_SERVER_PORT=${PORT:-8502} streamlit run app.py --server.address 0.0.0.0"]
