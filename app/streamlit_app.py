@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from html import escape
 import os
 from pathlib import Path
 import sys
@@ -15,11 +16,27 @@ if str(SRC_PATH) not in sys.path:
 
 from floodsense.config import FEATURES_USED, INSUFFICIENT_DATA_MESSAGE  # noqa: E402
 from floodsense.inference import load_artifacts, predict_from_user_inputs  # noqa: E402
+from floodsense.provincial_alerts import merge_provincial_alerts_by_same_advisory  # noqa: E402
 
 
 st.set_page_config(page_title="FloodSense Nexus", page_icon="🌊", layout="wide")
 ARTIFACTS_DIR = ROOT / "artifacts"
 BACKEND_URL = os.getenv("FLOODSENSE_BACKEND_URL", "http://127.0.0.1:8000")
+
+
+def _normalize_risk_level(value: object) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s in {"Low", "Medium", "High", "Critical"}:
+        return s
+    return {"low": "Low", "medium": "Medium", "high": "High", "critical": "Critical"}.get(s.lower())
+
+
+def _district_display_name(district_key: str) -> str:
+    return district_key.strip().replace("_", " ")
 
 
 def _inject_styles() -> None:
@@ -213,29 +230,38 @@ def _compute_provincial_alerts(
         result = _predict(payload)
         if not result.get("ok", False):
             continue
-        if result.get("risk_level_en") in {"High", "Critical"}:
-            alerts.append(
-                {
-                    "district": district,
-                    "risk_level_en": result["risk_level_en"],
-                    "risk_level_ur": result["risk_level_ur"],
-                    "recommended_action_en": result["recommended_action_en"],
-                }
-            )
+        risk = _normalize_risk_level(result.get("risk_level_en"))
+        if risk not in {"High", "Critical"}:
+            continue
+        alerts.append(
+            {
+                "district": district,
+                "risk_level_en": risk,
+                "risk_level_ur": (result.get("risk_level_ur") or "").strip(),
+                "recommended_action_en": (result.get("recommended_action_en") or "").strip(),
+                "recommended_action_ur": (result.get("recommended_action_ur") or "").strip(),
+            }
+        )
     return alerts
 
 
-def _render_alert_mode(alerts: list[dict]) -> None:
-    if alerts:
+def _render_alert_mode(alert_groups: list[dict]) -> None:
+    if alert_groups:
         lines = [
             '<div class="alert-mode">',
             '<p class="alert-mode-title">ALERT MODE ACTIVE: High/Critical Districts Detected</p>',
         ]
-        for row in alerts:
+        for group in alert_groups:
+            labels = escape(
+                ", ".join(_district_display_name(key) for key in group["districts"]),
+            )
+            r_en = escape(group["risk_level_en"])
+            r_ur = escape(group.get("risk_level_ur") or "")
+            a_en = escape(group.get("recommended_action_en") or "")
+            a_ur = escape(group.get("recommended_action_ur") or "")
             lines.append(
-                f'<div class="alert-line"><b>{row["district"]}</b> '
-                f'({row["risk_level_en"]}/{row["risk_level_ur"]}) — '
-                f'{row["recommended_action_en"]}</div>'
+                f'<div class="alert-line"><b>{labels}</b> '
+                f'({r_en} / {r_ur}) — {a_en}<br/>{a_ur}</div>'
             )
         lines.append("</div>")
         st.markdown("\n".join(lines), unsafe_allow_html=True)
@@ -293,7 +319,7 @@ def main() -> None:
         soil_condition=current_soil,
         visible_water=current_visible_water,
     )
-    _render_alert_mode(alerts)
+    _render_alert_mode(merge_provincial_alerts_by_same_advisory(alerts))
 
     col_left, col_right = st.columns([1.1, 1.0], gap="large")
 

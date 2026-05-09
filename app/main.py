@@ -18,6 +18,7 @@ if str(SRC_PATH) not in sys.path:
 
 from floodsense.config import DISTRICT_RISK_PROFILE, FEATURES_USED, INSUFFICIENT_DATA_MESSAGE  # noqa: E402
 from floodsense.inference import load_artifacts, predict_from_user_inputs  # noqa: E402
+from floodsense.provincial_alerts import merge_provincial_alerts_by_same_advisory  # noqa: E402
 
 
 st.set_page_config(page_title="FloodSense - Flood Risk", layout="centered")
@@ -59,6 +60,29 @@ ACTION_LEVELS = {
     "High": {"icon": "!!", "label": "Warn", "urdu": "خبردار کریں", "detail": "Issue warning and position rescue teams."},
     "Critical": {"icon": "!!!", "label": "Evacuate", "urdu": "انخلا کریں", "detail": "Begin immediate evacuation in vulnerable areas."},
 }
+
+_CANONICAL_RISK_ORDER = frozenset({"Low", "Medium", "High", "Critical"})
+_RISK_ALIASES = {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "critical": "Critical",
+}
+
+
+def _normalize_risk_level(value: object) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s in _CANONICAL_RISK_ORDER:
+        return s
+    return _RISK_ALIASES.get(s.lower())
+
+
+def _district_display_name(district_key: str) -> str:
+    return district_key.strip().replace("_", " ")
 
 EMERGENCY_CONTACTS = [
     {"label": "Rescue / Emergency", "value": "1122", "detail": "Emergency response and rescue"},
@@ -317,6 +341,36 @@ def _inject_styles() -> None:
                 padding-top: 12px;
                 margin-top: 12px;
             }
+            .alert-line-en-summary {
+                color: #7F1D1D;
+                font-size: 17px;
+                font-weight: 700;
+                line-height: 1.4;
+            }
+            .alert-line-en-detail {
+                color: #991B1B;
+                font-size: 15px;
+                font-weight: 600;
+                line-height: 1.5;
+                margin-top: 4px;
+            }
+            .alert-line-ur-label {
+                color: #7F1D1D;
+                font-size: 18px;
+                font-weight: 700;
+                line-height: 2;
+                margin-top: 6px;
+            }
+            .alert-line-ur-detail {
+                color: #991B1B;
+                font-size: 16px;
+                font-weight: 600;
+                line-height: 2.05;
+                margin-top: 2px;
+                white-space: normal;
+                word-wrap: break-word;
+                overflow-wrap: anywhere;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -389,9 +443,12 @@ def _compute_provincial_alerts(
     selected_date: date,
     soil_condition: str,
     visible_water: str,
+    exclude_district: str | None = None,
 ) -> list[dict]:
     alerts: list[dict] = []
     for district in districts:
+        if exclude_district is not None and district == exclude_district:
+            continue
         result = _predict(
             {
                 "rainfall_mm": float(rainfall_mm),
@@ -401,14 +458,18 @@ def _compute_provincial_alerts(
                 "visible_water": visible_water,
             }
         )
-        if result.get("ok", False) and result.get("risk_level_en") in {"High", "Critical"}:
-            alerts.append(
-                {
-                    "district": district,
-                    "risk_level_en": result["risk_level_en"],
-                    "recommended_action_en": result["recommended_action_en"],
-                }
-            )
+        risk = _normalize_risk_level(result.get("risk_level_en"))
+        if not result.get("ok", False) or risk not in {"High", "Critical"}:
+            continue
+        alerts.append(
+            {
+                "district": district,
+                "risk_level_en": risk,
+                "risk_level_ur": (result.get("risk_level_ur") or "").strip(),
+                "recommended_action_en": (result.get("recommended_action_en") or "").strip(),
+                "recommended_action_ur": (result.get("recommended_action_ur") or "").strip(),
+            }
+        )
     return alerts
 
 
@@ -425,26 +486,48 @@ def _render_header() -> None:
     )
 
 
-def _render_alert_banner(alerts: list[dict]) -> None:
-    if not alerts:
+def _render_alert_banner(alert_groups: list[dict], *, show_exclude_hint: bool) -> None:
+    if not alert_groups:
         return
-    lines = [
+    # Fragment strings must start at column 0: Streamlit Markdown treats lines
+    # with leading spaces as indented code fences, which shows raw HTML as text.
+    parts: list[str] = [
         '<div class="alert-banner">',
         '<p class="alert-title">High Risk Alert</p>',
         '<div class="alert-title urdu">خطرے کی انتباہ</div>',
     ]
-    for row in alerts:
-        risk = row["risk_level_en"]
-        lines.append(
-            f"""
-            <div class="alert-item">
-              <div style="color:#7F1D1D; font-size:17px; font-weight:700;">{row["district"]}: {risk}. {row["recommended_action_en"]}</div>
-              <div class="urdu" style="color:#7F1D1D; font-size:17px; font-weight:700;">{URDU_RISK_LABELS.get(risk, risk)} - {URDU_ACTIONS.get(risk, "")}</div>
-            </div>
-            """
+    if show_exclude_hint:
+        parts.append(
+            '<p class="alert-banner-context" '
+            'style="color:#991B1B;font-size:14px;line-height:1.45;font-weight:600;'
+            'margin:4px 0 12px 0;">'
+            "Additional regions flagged for these same rainfall and field inputs:"
+            '</p>'
+            '<p class="urdu alert-banner-context" '
+            'style="color:#991B1B;font-size:15px;line-height:2;font-weight:600;'
+            'margin:4px 0 12px 0;">انھی بارش اور میدانی حالات پر مزید علاقے زیادہ خطرے میں۔</p>'
         )
-    lines.append("</div>")
-    st.markdown("\n".join(lines), unsafe_allow_html=True)
+    for row in alert_groups:
+        risk = row["risk_level_en"]
+        disp = escape(
+            ", ".join(_district_display_name(district_key) for district_key in row["districts"]),
+        )
+        risk_e = escape(risk)
+        action_en = escape(row["recommended_action_en"])
+        risk_ur = escape(row.get("risk_level_ur") or URDU_RISK_LABELS.get(risk, risk))
+        action_ur = escape(row.get("recommended_action_ur") or URDU_ACTIONS.get(risk, ""))
+        parts.extend(
+            (
+                '<div class="alert-item">',
+                f'<div class="alert-line-en-summary">{disp}: {risk_e}.</div>',
+                f'<div class="alert-line-en-detail">{action_en}</div>',
+                f'<div class="urdu alert-line-ur-label">{risk_ur}</div>',
+                f'<div class="urdu alert-line-ur-detail">{action_ur}</div>',
+                "</div>",
+            )
+        )
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
 
 
 def _field_label(english: str, urdu: str) -> None:
@@ -711,14 +794,17 @@ def main() -> None:
         return
 
     if st.session_state.get("show_result", False):
+        focus = (st.session_state.get("latest_payload") or {}).get("district") or ""
         alerts = _compute_provincial_alerts(
             districts=districts,
             rainfall_mm=float(st.session_state.get("rainfall_input", 0.0)),
             selected_date=st.session_state.get("date_input", date.today()),
             soil_condition=st.session_state.get("soil_input", "Moist"),
             visible_water=st.session_state.get("water_input", "No"),
+            exclude_district=focus or None,
         )
-        _render_alert_banner(alerts)
+        alert_groups = merge_provincial_alerts_by_same_advisory(alerts)
+        _render_alert_banner(alert_groups, show_exclude_hint=bool(focus))
         if st.button("Back / واپس", key="back_top", use_container_width=False):
             st.session_state["show_result"] = False
             st.rerun()
